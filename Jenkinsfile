@@ -2,13 +2,13 @@ pipeline {
     agent any
 
     environment {
-        // Azure credentials (injected as environment variables using Jenkins credentials plugin)
+        // Azure credentials
         ARM_SUBSCRIPTION_ID = credentials('azure-subscription-id')
         ARM_CLIENT_ID = credentials('azure-client-id')
         ARM_CLIENT_SECRET = credentials('azure-client-secret')
         ARM_TENANT_ID = credentials('azure-tenant-id')
 
-        // Private SSH key value (used in Prepare SSH Key stage)
+        // SSH key - make sure this credential ID exists in Jenkins
         SSH_KEY_CONTENT = credentials('ssh-private-key')
     }
 
@@ -72,9 +72,36 @@ pipeline {
             steps {
                 echo '🔐 Writing SSH private key to temp file...'
                 sh '''
+                    # Debug: Check if SSH_KEY_CONTENT is available
+                    echo "SSH_KEY_CONTENT length: ${#SSH_KEY_CONTENT}"
+                    echo "First few characters: ${SSH_KEY_CONTENT:0:50}..."
+                    
+                    # Write SSH key to temp file
                     echo "$SSH_KEY_CONTENT" > /tmp/ssh_key
+                    
+                    # Fix potential line ending issues
+                    dos2unix /tmp/ssh_key 2>/dev/null || true
+                    
+                    # Set correct permissions
                     chmod 600 /tmp/ssh_key
-                    ssh-keygen -l -f /tmp/ssh_key || echo "Key format check passed"
+                    
+                    # Debug: Check file details
+                    echo "SSH key file details:"
+                    ls -la /tmp/ssh_key
+                    echo "File type:"
+                    file /tmp/ssh_key
+                    echo "First line of key:"
+                    head -1 /tmp/ssh_key
+                    
+                    # Validate SSH key format
+                    if ssh-keygen -l -f /tmp/ssh_key; then
+                        echo "✅ SSH key validation successful"
+                    else
+                        echo "❌ SSH key validation failed"
+                        echo "Key content (first 200 chars):"
+                        head -c 200 /tmp/ssh_key
+                        exit 1
+                    fi
                 '''
             }
         }
@@ -91,14 +118,38 @@ pipeline {
 
                         echo "Public IP: ${publicIP}"
 
-                        writeFile file: 'ansible_inventory.ini', text: """
-[webservers]
+                        // Create ansible directory if it doesn't exist
+                        sh 'mkdir -p ../ansible'
+
+                        writeFile file: '../ansible/inventory', text: """[webservers]
 ${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=/tmp/ssh_key ansible_host_key_checking=false
 """
 
-                        sh 'mkdir -p ../ansible && mv ansible_inventory.ini ../ansible/inventory'
+                        echo "Inventory file created:"
+                        sh 'cat ../ansible/inventory'
                     }
                 }
+            }
+        }
+
+        stage('Debug SSH Connection') {
+            steps {
+                echo '🔍 Testing direct SSH connection...'
+                sh '''
+                    # Get the public IP
+                    cd terraform
+                    PUBLIC_IP=$(terraform output -raw public_ip_address)
+                    echo "Testing SSH to: $PUBLIC_IP"
+                    
+                    # Test direct SSH connection
+                    ssh -i /tmp/ssh_key -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+                        azureuser@$PUBLIC_IP 'echo "✅ Direct SSH connection successful!"' || {
+                        echo "❌ Direct SSH connection failed"
+                        echo "Debugging SSH connection..."
+                        ssh -i /tmp/ssh_key -o StrictHostKeyChecking=no -o ConnectTimeout=10 -v \
+                            azureuser@$PUBLIC_IP 'echo "test"' 2>&1 | head -20
+                    }
+                '''
             }
         }
 
@@ -106,7 +157,13 @@ ${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=/tmp/ssh_key ans
             steps {
                 dir('ansible') {
                     echo '🔗 Testing SSH connection using Ansible ping...'
-                    retry(5) {
+                    sh '''
+                        echo "Current directory: $(pwd)"
+                        echo "Inventory file contents:"
+                        cat inventory
+                        echo "Testing Ansible ping..."
+                    '''
+                    retry(3) {
                         sh 'ansible webservers -i inventory -m ping -v'
                     }
                 }
@@ -117,7 +174,19 @@ ${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=/tmp/ssh_key ans
             steps {
                 dir('ansible') {
                     echo '🛠️ Installing Apache web server via Ansible...'
-                    sh 'ansible-playbook -i inventory install_web.yml -v'
+                    sh '''
+                        echo "Available playbooks:"
+                        ls -la *.yml 2>/dev/null || echo "No .yml files found"
+                        
+                        # Check if playbook exists
+                        if [ -f install_web.yml ]; then
+                            ansible-playbook -i inventory install_web.yml -v
+                        else
+                            echo "❌ install_web.yml not found. Available files:"
+                            ls -la
+                            exit 1
+                        fi
+                    '''
                 }
             }
         }
@@ -184,6 +253,7 @@ ${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=/tmp/ssh_key ans
 2. VM inaccessible via SSH
 3. Resource limit reached in Azure
 4. Syntax error in Terraform or Ansible
+5. Missing SSH key or wrong credential ID
 Check logs above for exact failure.
             '''
         }
