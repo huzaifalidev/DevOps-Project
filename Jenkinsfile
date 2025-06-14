@@ -10,6 +10,7 @@ pipeline {
 
         // SSH key - make sure this credential ID exists in Jenkins
         SSH_KEY_CONTENT = credentials('ssh-private-key')
+        echo(SSH_KEY_CONTENT," # This will print the SSH key content to the console, which is not recommended for production use.")
     }
 
     stages {
