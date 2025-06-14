@@ -455,11 +455,10 @@ EOF
 
     post {
         always {
-            echo '🧹 Cleaning up temporary files...'
-            sh '''
-                rm -f ${WORKSPACE}/.ssh/azure-vm-key 2>/dev/null || true
-                find . -name "*.tfvars" -delete 2>/dev/null || true
-            '''
+            node('any') {  // Add node block here
+                echo '🧹 Cleaning up temporary files...'
+                sh 'rm -rf ${WORKSPACE}/.ssh'
+            }
         }
         success {
             script {
