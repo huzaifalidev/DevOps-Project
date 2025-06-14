@@ -1,5 +1,16 @@
 pipeline { 
-    agent any
+    // Option 1: Use built-in node (most common solution)
+    agent { label 'built-in' }
+    
+    // Option 2: If you want to use any available agent, try:
+    // agent any
+    
+    // Option 3: If you have specific node labels, use:
+    // agent { label 'linux' }
+    // agent { label 'docker' }
+    
+    // Option 4: Use none and specify agent per stage
+    // agent none
 
     environment {
         // Azure credentials
@@ -12,6 +23,8 @@ pipeline {
 
     stages {
         stage('Checkout') {
+            // If using agent none above, specify agent per stage:
+            // agent { label 'built-in' }
             steps {
                 echo '📦 Checking out code from Git repository...'
                 checkout scm
@@ -62,7 +75,7 @@ pipeline {
         stage('Wait for VM') {
             steps {
                 echo '⏳ Waiting for VM to boot and get public IP...'
-                sleep time: 60, unit: 'SECONDS'  // Increased wait time for VM to fully boot
+                sleep time: 60, unit: 'SECONDS'
             }
         }
 
@@ -70,32 +83,23 @@ pipeline {
             steps {
                 echo '🔐 Preparing SSH private key...'
                 script {
-                    // Use Jenkins workspace directory instead of ~/.ssh
                     sh 'mkdir -p ${WORKSPACE}/.ssh'
                     
                     withCredentials([string(credentialsId: 'ssh-private-key', variable: 'SSH_KEY_CONTENT')]) {
                         sh '''#!/bin/bash
-                            # Write SSH key content to file in workspace
                             echo "$SSH_KEY_CONTENT" > ${WORKSPACE}/.ssh/azure-vm-key
-                            
-                            # Set correct permissions
                             chmod 600 ${WORKSPACE}/.ssh/azure-vm-key
                             chmod 700 ${WORKSPACE}/.ssh
                             
-                            # Debug: Check file details
                             echo "SSH key file details:"
                             ls -la ${WORKSPACE}/.ssh/azure-vm-key
-                            
-                            # Count lines (should be multiple lines for a proper key)
                             echo "SSH key has $(wc -l < ${WORKSPACE}/.ssh/azure-vm-key) lines"
                             
-                            # Show first and last line (without revealing key content)
                             echo "First line of key:"
                             head -1 ${WORKSPACE}/.ssh/azure-vm-key
                             echo "Last line of key:"
                             tail -1 ${WORKSPACE}/.ssh/azure-vm-key
                             
-                            # Validate key format
                             if head -1 ${WORKSPACE}/.ssh/azure-vm-key | grep -E "^-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----" > /dev/null; then
                                 echo "✅ SSH key header format appears valid"
                             else
@@ -114,17 +118,14 @@ pipeline {
                                 exit 1
                             fi
                             
-                            # Test key validity (this is the real test)
                             if ssh-keygen -l -f ${WORKSPACE}/.ssh/azure-vm-key 2>/dev/null; then
                                 echo "✅ SSH key validation successful"
                             else
                                 echo "❌ SSH key validation failed - key is corrupted or invalid format"
                                 echo "Trying to identify the issue..."
                                 
-                                # Check for common issues
                                 if grep -q "\\r" ${WORKSPACE}/.ssh/azure-vm-key; then
                                     echo "Found Windows line endings (\\r) - this might be the issue"
-                                    # Remove Windows line endings
                                     tr -d '\\r' < ${WORKSPACE}/.ssh/azure-vm-key > ${WORKSPACE}/.ssh/azure-vm-key.tmp
                                     mv ${WORKSPACE}/.ssh/azure-vm-key.tmp ${WORKSPACE}/.ssh/azure-vm-key
                                     chmod 600 ${WORKSPACE}/.ssh/azure-vm-key
@@ -158,11 +159,8 @@ pipeline {
                         ).trim()
 
                         echo "Public IP: ${publicIP}"
-
-                        // Create ansible directory if it doesn't exist
                         sh 'mkdir -p ../ansible'
 
-                        // Use WORKSPACE path instead of ~ for SSH key
                         writeFile file: '../ansible/inventory', text: """[webservers]
 ${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=${WORKSPACE}/.ssh/azure-vm-key ansible_host_key_checking=false ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30'
 
@@ -181,16 +179,13 @@ ansible_python_interpreter=/usr/bin/python3
             steps {
                 echo '🔍 Testing direct SSH connection...'
                 sh '''#!/bin/bash
-                    # Get the public IP
                     cd terraform
                     PUBLIC_IP=$(terraform output -raw public_ip_address)
                     echo "Testing SSH to: $PUBLIC_IP"
                     
-                    # Extended wait for Azure VM to be fully ready
                     echo "Waiting additional 30 seconds for VM to be fully ready..."
                     sleep 30
                     
-                    # Check if VM is accessible
                     echo "Checking if VM is accessible..."
                     if timeout 10 ping -c 3 $PUBLIC_IP; then
                         echo "✅ VM is pingable"
@@ -198,7 +193,6 @@ ansible_python_interpreter=/usr/bin/python3
                         echo "⚠️  VM not pingable (this is normal for Azure VMs with restricted ICMP)"
                     fi
                     
-                    # Check SSH service with retries
                     echo "Checking SSH service availability..."
                     for i in {1..5}; do
                         if timeout 10 nc -zv $PUBLIC_IP 22 2>/dev/null; then
@@ -210,17 +204,14 @@ ansible_python_interpreter=/usr/bin/python3
                         fi
                     done
                     
-                    # Final SSH port check
                     if ! timeout 10 nc -zv $PUBLIC_IP 22 2>/dev/null; then
                         echo "❌ SSH port not accessible after 5 attempts"
                         exit 1
                     fi
                     
-                    # Test SSH key file accessibility
                     echo "Verifying SSH key file..."
                     ls -la ${WORKSPACE}/.ssh/azure-vm-key
                     
-                    # Test direct SSH connection with multiple attempts
                     echo "Attempting SSH connection (5 attempts)..."
                     for i in {1..5}; do
                         echo "SSH attempt $i/5..."
@@ -283,7 +274,6 @@ ansible_python_interpreter=/usr/bin/python3
                         echo "Available playbooks:"
                         ls -la *.yml 2>/dev/null || echo "No .yml files found"
                         
-                        # Check if playbook exists
                         if [ -f install_web.yml ]; then
                             ansible-playbook -i inventory install_web.yml -v --timeout=120
                         elif [ -f playbook.yml ]; then
@@ -417,8 +407,6 @@ EOF
                         ).trim()
 
                         echo "🌐 Verifying web server at http://${publicIP}"
-
-                        // Wait for web server to be ready
                         echo "Waiting for web server to start..."
                         sleep time: 30, unit: 'SECONDS'
 
@@ -455,10 +443,9 @@ EOF
 
     post {
         always {
-            node('any') {  // Add node block here
-                echo '🧹 Cleaning up temporary files...'
-                sh 'rm -rf ${WORKSPACE}/.ssh'
-            }
+            // Fixed: Remove the extra node block that was causing issues
+            echo '🧹 Cleaning up temporary files...'
+            sh 'rm -rf ${WORKSPACE}/.ssh'
         }
         success {
             script {
