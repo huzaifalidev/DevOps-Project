@@ -105,5 +105,5 @@ resource "azurerm_network_interface_security_group_association" "nic_nsg_assoc" 
 }
 
 output "public_ip" {
-  value = azurerm_public_ip.public_ip.ip_address
+  value = azurerm_public_ip.pip.ip_address
 }
