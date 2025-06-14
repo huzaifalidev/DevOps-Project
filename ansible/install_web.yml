@@ -1,0 +1,22 @@
+---
+- name: Configure VM and deploy static website
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: Update APT cache
+      apt:
+        update_cache: yes
+
+    - name: Install Apache
+      apt:
+        name: apache2
+        state: present
+
+    - name: Copy index.html to web root
+      copy:
+        src: ../app/index.html
+        dest: /var/www/html/index.html
+        owner: www-data
+        group: www-data
+        mode: '0644'
