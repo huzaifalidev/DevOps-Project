@@ -64,7 +64,7 @@ pipeline {
         stage('Wait for VM') {
             steps {
                 echo '⏳ Waiting for VM to boot and get public IP...'
-                sleep time: 90, unit: 'SECONDS'
+                sleep time: 10, unit: 'SECONDS'
             }
         }
 
