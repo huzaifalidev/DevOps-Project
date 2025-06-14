@@ -456,49 +456,10 @@ EOF
     post {
         always {
             echo '🧹 Cleaning up temporary files...'
-            sh '''
-                rm -f ${WORKSPACE}/.ssh/azure-vm-key 2>/dev/null || true
-                find . -name "*.tfvars" -delete 2>/dev/null || true
-            '''
-        }
-        success {
-            script {
-                if (fileExists('terraform/deployment_url.txt')) {
-                    def url = readFile('terraform/deployment_url.txt').trim()
-                    echo """
-✅ DEPLOYMENT SUCCESSFUL!
-🌍 URL: ${url}
-📦 All stages completed successfully!
-🚀 Infrastructure provisioned ✓
-🔧 Web server installed ✓
-🌐 Static site deployed ✓
-
-Your DevOps pipeline is working perfectly! 🎉
-                    """
-                } else {
-                    echo '✅ Pipeline completed successfully!'
-                }
+            // Wrap sh commands in node block
+            node('Jenkins') {  // Use your node label
+                sh 'your-cleanup-command-here'
             }
-        }
-        failure {
-            echo '''
-❌ Pipeline failed. Check the specific stage that failed above.
-
-Common solutions:
-1. SSH Key Issues: Regenerate SSH key pair and update Jenkins credentials
-2. Azure Permissions: Verify service principal has proper permissions
-3. Network Issues: Check Azure NSG rules allow SSH (port 22) and HTTP (port 80)
-4. VM Startup: Increase wait times for VM to fully boot
-5. Credentials: Verify all Jenkins credentials are correctly configured
-
-For SSH key issues specifically:
-- Ensure private key format is correct (BEGIN/END PRIVATE KEY)
-- Remove any Windows line endings from the key
-- Verify the public key matches the private key
-- Check that the public key is properly deployed to the Azure VM
-            '''
-        }
-        cleanup {
             echo '🧼 Workspace cleanup complete.'
         }
     }
