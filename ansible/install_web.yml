@@ -1,22 +1,47 @@
 ---
-- name: Configure VM and deploy static website
-  hosts: all
+- name: Install and configure Apache web server
+  hosts: webservers
   become: yes
-
   tasks:
-    - name: Update APT cache
+    - name: Update apt cache
       apt:
         update_cache: yes
 
-    - name: Install Apache
+    - name: Install Apache2
       apt:
         name: apache2
         state: present
 
-    - name: Copy index.html to web root
+    - name: Start Apache2 service
+      systemd:
+        name: apache2
+        state: started
+        enabled: yes
+
+    - name: Create web directory
+      file:
+        path: /var/www/html
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+
+    - name: Deploy static web application
       copy:
         src: ../app/index.html
         dest: /var/www/html/index.html
         owner: www-data
         group: www-data
         mode: '0644'
+
+    - name: Restart Apache2 to apply changes
+      systemd:
+        name: apache2
+        state: restarted
+
+    - name: Ensure Apache2 is accessible
+      uri:
+        url: "http://{{ ansible_host }}"
+        method: GET
+        status_code: 200
+      delegate_to: localhost

@@ -1,33 +1,54 @@
+terraform {
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 3.0"
+    }
+  }
+}
+
 provider "azurerm" {
   features {}
 }
 
-resource "azurerm_resource_group" "rg" {
-  name     = "devops-rg"  # Matches existing
-  location = "East US"
+# Resource Group
+resource "azurerm_resource_group" "main" {
+  name     = var.resource_group_name
+  location = var.location
 }
 
-resource "azurerm_virtual_network" "vnet" {
-  name                = "devops-vnet"  # Matches existing
+# Virtual Network
+resource "azurerm_virtual_network" "main" {
+  name                = "${var.prefix}-network"
   address_space       = ["10.0.0.0/16"]
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
 }
 
-resource "azurerm_subnet" "subnet" {
-  name                 = "devops-subnet"  # Matches existing
-  resource_group_name  = azurerm_resource_group.rg.name
-  virtual_network_name = azurerm_virtual_network.vnet.name
-  address_prefixes     = ["10.0.1.0/24"]
+# Subnet
+resource "azurerm_subnet" "internal" {
+  name                 = "internal"
+  resource_group_name  = azurerm_resource_group.main.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = ["10.0.2.0/24"]
 }
 
-resource "azurerm_network_security_group" "nsg" {
-  name                = "devops-nsg"  # Matches existing
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
+# Public IP
+resource "azurerm_public_ip" "main" {
+  name                = "${var.prefix}-pip"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  allocation_method   = "Static"
+}
+
+# Network Security Group
+resource "azurerm_network_security_group" "main" {
+  name                = "${var.prefix}-nsg"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
 
   security_rule {
-    name                       = "Allow-SSH"
+    name                       = "SSH"
     priority                   = 1001
     direction                  = "Inbound"
     access                     = "Allow"
@@ -39,7 +60,7 @@ resource "azurerm_network_security_group" "nsg" {
   }
 
   security_rule {
-    name                       = "Allow-HTTP"
+    name                       = "HTTP"
     priority                   = 1002
     direction                  = "Inbound"
     access                     = "Allow"
@@ -51,35 +72,39 @@ resource "azurerm_network_security_group" "nsg" {
   }
 }
 
-resource "azurerm_public_ip" "public_ip" {  # Matches existing resource name
-  name                = "devops-public-ip"  # Matches existing
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  allocation_method   = "Static"  # Matches existing
-  sku                = "Basic"
-}
-
-resource "azurerm_network_interface" "nic" {
-  name                = "devops-nic"  # Matches existing
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
+# Network Interface
+resource "azurerm_network_interface" "main" {
+  name                = "${var.prefix}-nic"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
 
   ip_configuration {
-    name                          = "internal"
-    subnet_id                     = azurerm_subnet.subnet.id
+    name                          = "testconfiguration1"
+    subnet_id                     = azurerm_subnet.internal.id
     private_ip_address_allocation = "Dynamic"
-    public_ip_address_id         = azurerm_public_ip.public_ip.id
+    public_ip_address_id          = azurerm_public_ip.main.id
   }
 }
 
-resource "azurerm_linux_virtual_machine" "vm" {
-  name                  = "devops-vm"  # Matches existing
-  location              = azurerm_resource_group.rg.location
-  resource_group_name   = azurerm_resource_group.rg.name
-  size                  = "Standard_B1s"
-  admin_username        = var.admin_username
-  network_interface_ids = [azurerm_network_interface.nic.id]
+# Associate Security Group to Network Interface
+resource "azurerm_network_interface_security_group_association" "main" {
+  network_interface_id      = azurerm_network_interface.main.id
+  network_security_group_id = azurerm_network_security_group.main.id
+}
+
+# Virtual Machine
+resource "azurerm_linux_virtual_machine" "main" {
+  name                = "${var.prefix}-vm"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  size                = var.vm_size
+  admin_username      = var.admin_username
+
   disable_password_authentication = true
+
+  network_interface_ids = [
+    azurerm_network_interface.main.id,
+  ]
 
   admin_ssh_key {
     username   = var.admin_username
@@ -99,11 +124,16 @@ resource "azurerm_linux_virtual_machine" "vm" {
   }
 }
 
-resource "azurerm_network_interface_security_group_association" "nic_nsg_association" {  # Matches existing
-  network_interface_id      = azurerm_network_interface.nic.id
-  network_security_group_id = azurerm_network_security_group.nsg.id
+# Output the public IP address
+output "public_ip_address" {
+  value = azurerm_public_ip.main.ip_address
 }
 
-output "public_ip" {
-  value = azurerm_public_ip.public_ip.ip_address
+# Generate inventory file for Ansible
+resource "local_file" "ansible_inventory" {
+  content = templatefile("${path.module}/inventory.tmpl", {
+    ip_address = azurerm_public_ip.main.ip_address
+    username   = var.admin_username
+  })
+  filename = "${path.module}/../ansible/inventory"
 }
