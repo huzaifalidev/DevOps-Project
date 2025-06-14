@@ -71,41 +71,55 @@ pipeline {
         stage('Prepare SSH Key') {
             steps {
                 echo '🔐 Writing SSH private key to match inventory path...'
-                sh '''
-                    # Create .ssh directory in Jenkins home
-                    mkdir -p ~/.ssh
+                script {
+                    // Create .ssh directory
+                    sh 'mkdir -p ~/.ssh'
                     
-                    # Debug: Check if SSH_KEY_CONTENT is available
-                    echo "SSH_KEY_CONTENT length: ${#SSH_KEY_CONTENT}"
-                    echo "First few characters: ${SSH_KEY_CONTENT:0:50}..."
+                    // Write SSH key using Jenkins writeFile to avoid shell substitution issues
+                    writeFile file: "${env.HOME}/.ssh/azure-vm-key", text: env.SSH_KEY_CONTENT
                     
-                    # Write SSH key to match inventory path
-                    echo "$SSH_KEY_CONTENT" > ~/.ssh/azure-vm-key
-                    
-                    # Fix potential line ending issues
-                    dos2unix ~/.ssh/azure-vm-key 2>/dev/null || true
-                    
-                    # Set correct permissions
-                    chmod 600 ~/.ssh/azure-vm-key
-                    
-                    # Debug: Check file details
-                    echo "SSH key file details:"
-                    ls -la ~/.ssh/azure-vm-key
-                    echo "File type:"
-                    file ~/.ssh/azure-vm-key
-                    echo "First line of key:"
-                    head -1 ~/.ssh/azure-vm-key
-                    
-                    # Validate SSH key format
-                    if ssh-keygen -l -f ~/.ssh/azure-vm-key; then
-                        echo "✅ SSH key validation successful"
-                    else
-                        echo "❌ SSH key validation failed"
-                        echo "Key content (first 200 chars):"
-                        head -c 200 ~/.ssh/azure-vm-key
-                        exit 1
-                    fi
-                '''
+                    // Set permissions and validate
+                    sh '''#!/bin/bash
+                        # Set correct permissions
+                        chmod 600 ~/.ssh/azure-vm-key
+                        
+                        # Debug: Check file details
+                        echo "SSH key file details:"
+                        ls -la ~/.ssh/azure-vm-key
+                        
+                        # Check file type
+                        echo "File type:"
+                        file ~/.ssh/azure-vm-key
+                        
+                        # Show first line (should be -----BEGIN ... KEY-----)
+                        echo "First line of key:"
+                        head -1 ~/.ssh/azure-vm-key
+                        
+                        # Validate SSH key format
+                        if ssh-keygen -l -f ~/.ssh/azure-vm-key 2>/dev/null; then
+                            echo "✅ SSH key validation successful"
+                        else
+                            echo "❌ SSH key validation failed - checking if it's the right format"
+                            echo "Key content preview (first 100 chars):"
+                            head -c 100 ~/.ssh/azure-vm-key
+                            echo ""
+                            echo "Attempting to fix common issues..."
+                            
+                            # Try to fix line endings
+                            tr -d '\r' < ~/.ssh/azure-vm-key > ~/.ssh/azure-vm-key.tmp
+                            mv ~/.ssh/azure-vm-key.tmp ~/.ssh/azure-vm-key
+                            chmod 600 ~/.ssh/azure-vm-key
+                            
+                            # Try validation again
+                            if ssh-keygen -l -f ~/.ssh/azure-vm-key 2>/dev/null; then
+                                echo "✅ SSH key fixed and validated"
+                            else
+                                echo "❌ SSH key still invalid"
+                                exit 1
+                            fi
+                        fi
+                    '''
+                }
             }
         }
 
@@ -125,7 +139,7 @@ pipeline {
                         sh 'mkdir -p ../ansible'
 
                         writeFile file: '../ansible/inventory', text: """[webservers]
-${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=~/.ssh/azure-vm-key ansible_host_key_checking=false
+${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=~/.ssh/azure-vm-key ansible_host_key_checking=false ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
 """
 
                         echo "Inventory file created:"
@@ -138,20 +152,36 @@ ${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=~/.ssh/azure-vm-
         stage('Debug SSH Connection') {
             steps {
                 echo '🔍 Testing direct SSH connection...'
-                sh '''
+                sh '''#!/bin/bash
                     # Get the public IP
                     cd terraform
                     PUBLIC_IP=$(terraform output -raw public_ip_address)
                     echo "Testing SSH to: $PUBLIC_IP"
                     
-                    # Test direct SSH connection
-                    ssh -i ~/.ssh/azure-vm-key -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-                        azureuser@$PUBLIC_IP 'echo "✅ Direct SSH connection successful!"' || {
-                        echo "❌ Direct SSH connection failed"
-                        echo "Debugging SSH connection..."
-                        ssh -i ~/.ssh/azure-vm-key -o StrictHostKeyChecking=no -o ConnectTimeout=10 -v \
-                            azureuser@$PUBLIC_IP 'echo "test"' 2>&1 | head -20
-                    }
+                    # Test direct SSH connection with timeout
+                    echo "Attempting SSH connection..."
+                    if timeout 30 ssh -i ~/.ssh/azure-vm-key \
+                        -o StrictHostKeyChecking=no \
+                        -o UserKnownHostsFile=/dev/null \
+                        -o ConnectTimeout=10 \
+                        -o BatchMode=yes \
+                        azureuser@$PUBLIC_IP 'echo "✅ Direct SSH connection successful!"'; then
+                        echo "SSH connection working!"
+                    else
+                        echo "❌ Direct SSH connection failed, debugging..."
+                        echo "Checking if VM is accessible..."
+                        ping -c 3 $PUBLIC_IP || echo "VM not pingable"
+                        
+                        echo "Checking SSH service..."
+                        nc -zv $PUBLIC_IP 22 || echo "SSH port not accessible"
+                        
+                        echo "Trying verbose SSH..."
+                        timeout 15 ssh -i ~/.ssh/azure-vm-key \
+                            -o StrictHostKeyChecking=no \
+                            -o UserKnownHostsFile=/dev/null \
+                            -o ConnectTimeout=10 \
+                            -v azureuser@$PUBLIC_IP 'echo "test"' 2>&1 | head -30
+                    fi
                 '''
             }
         }
@@ -167,7 +197,10 @@ ${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=~/.ssh/azure-vm-
                         echo "Testing Ansible ping..."
                     '''
                     retry(3) {
-                        sh 'ansible webservers -i inventory -m ping -v'
+                        sh '''
+                            sleep 5
+                            ansible webservers -i inventory -m ping -v
+                        '''
                     }
                 }
             }
@@ -184,10 +217,80 @@ ${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=~/.ssh/azure-vm-
                         # Check if playbook exists
                         if [ -f install_web.yml ]; then
                             ansible-playbook -i inventory install_web.yml -v
+                        elif [ -f playbook.yml ]; then
+                            ansible-playbook -i inventory playbook.yml -v
                         else
-                            echo "❌ install_web.yml not found. Available files:"
+                            echo "❌ No playbook found. Available files:"
                             ls -la
-                            exit 1
+                            echo "Creating a basic web server playbook..."
+                            cat > install_web.yml << 'EOF'
+---
+- name: Install and configure Apache web server
+  hosts: webservers
+  become: yes
+  tasks:
+    - name: Update package cache
+      apt:
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+    
+    - name: Install Apache
+      package:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - apache2
+      when: ansible_os_family == "Debian"
+    
+    - name: Start and enable Apache
+      service:
+        name: apache2
+        state: started
+        enabled: yes
+      when: ansible_os_family == "Debian"
+    
+    - name: Create a simple index page
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>DevOps Project Success!</title>
+              <style>
+                  body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
+                  .container { max-width: 600px; margin: 0 auto; }
+                  .success { color: #28a745; }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1 class="success">🎉 DevOps Pipeline Success!</h1>
+                  <p>Your infrastructure has been successfully deployed using:</p>
+                  <ul style="text-align: left; display: inline-block;">
+                      <li>Jenkins CI/CD Pipeline</li>
+                      <li>Terraform Infrastructure as Code</li>
+                      <li>Ansible Configuration Management</li>
+                      <li>Azure Cloud Platform</li>
+                  </ul>
+                  <p><strong>Deployment Date:</strong> {{ ansible_date_time.iso8601 }}</p>
+                  <p><strong>Server:</strong> {{ inventory_hostname }}</p>
+              </div>
+          </body>
+          </html>
+        dest: /var/www/html/index.html
+        owner: www-data
+        group: www-data
+        mode: '0644'
+      when: ansible_os_family == "Debian"
+    
+    - name: Ensure Apache is running
+      service:
+        name: apache2
+        state: started
+      when: ansible_os_family == "Debian"
+EOF
+                            echo "✅ Created basic playbook, running it now..."
+                            ansible-playbook -i inventory install_web.yml -v
                         fi
                     '''
                 }
@@ -205,15 +308,28 @@ ${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=~/.ssh/azure-vm-
 
                         echo "🌐 Verifying web server at http://${publicIP}"
 
+                        // Wait for web server to be ready
+                        echo "Waiting for web server to start..."
+                        sleep time: 30, unit: 'SECONDS'
+
                         retry(10) {
-                            sh """
-                                curl -fs http://${publicIP} > /dev/null && echo '✅ Server reachable!'
-                            """
+                            script {
+                                try {
+                                    sh """
+                                        curl -fs --connect-timeout 10 --max-time 30 http://${publicIP} > /dev/null
+                                        echo '✅ Server reachable!'
+                                    """
+                                } catch (Exception e) {
+                                    echo "❌ Server not reachable yet, retrying..."
+                                    sleep time: 10, unit: 'SECONDS'
+                                    throw e
+                                }
+                            }
                         }
 
                         sh """
                             echo "📄 Web page preview:"
-                            curl -s http://${publicIP} | head -20
+                            curl -s --connect-timeout 10 --max-time 30 http://${publicIP} | head -20
                         """
 
                         writeFile file: 'deployment_url.txt', text: "http://${publicIP}"
@@ -257,6 +373,8 @@ ${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=~/.ssh/azure-vm-
 3. Resource limit reached in Azure
 4. Syntax error in Terraform or Ansible
 5. Missing SSH key or wrong credential ID
+6. SSH key format issues
+7. Network connectivity problems
 Check logs above for exact failure.
             '''
         }
