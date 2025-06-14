@@ -12,6 +12,7 @@ pipeline {
         SSH_KEY = credentials('ssh-private-key')
     }
     
+    
     stages {
         stage('Validate Azure Credentials') {
             steps {
