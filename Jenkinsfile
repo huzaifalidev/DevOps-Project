@@ -54,23 +54,31 @@ pipeline {
             }
         }
 
-        stage('Terraform Plan') {
-            steps {
-                dir('terraform') {
-                    echo '📑 Creating Terraform plan...'
-                    sh 'terraform plan -out=tfplan'
-                }
+stage('Terraform Plan') {
+    steps {
+        dir('terraform') {
+            echo '📑 Creating Terraform plan...'
+            withCredentials([string(credentialsId: 'ssh-public-key', variable: 'SSH_PUBLIC_KEY')]) {
+                sh '''
+                    terraform plan -out=tfplan -var="ssh_public_key=${SSH_PUBLIC_KEY}"
+                '''
             }
         }
+    }
+}
 
-        stage('Terraform Apply') {
-            steps {
-                dir('terraform') {
-                    echo '🚀 Applying Terraform plan...'
-                    sh 'terraform apply -auto-approve tfplan'
-                }
+stage('Terraform Apply') {
+    steps {
+        dir('terraform') {
+            echo '🚀 Applying Terraform configuration...'
+            withCredentials([string(credentialsId: 'ssh-public-key', variable: 'SSH_PUBLIC_KEY')]) {
+                sh '''
+                    terraform apply -auto-approve -var="ssh_public_key=${SSH_PUBLIC_KEY}" tfplan
+                '''
             }
         }
+    }
+}
 
         stage('Wait for VM') {
             steps {

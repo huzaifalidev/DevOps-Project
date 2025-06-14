@@ -32,3 +32,8 @@ variable "ssh_public_key_path" {
   description = "Path to SSH public key"
   default     = "~/.ssh/azure-vm-key.pub"  # Correct path
 }
+variable "ssh_public_key" {
+  description = "SSH public key for VM access"
+  type        = string
+  sensitive   = true
+}
