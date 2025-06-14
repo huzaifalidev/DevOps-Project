@@ -70,36 +70,39 @@ pipeline {
 
         stage('Prepare SSH Key') {
             steps {
-                echo '🔐 Writing SSH private key to temp file...'
+                echo '🔐 Writing SSH private key to match inventory path...'
                 sh '''
+                    # Create .ssh directory in Jenkins home
+                    mkdir -p ~/.ssh
+                    
                     # Debug: Check if SSH_KEY_CONTENT is available
                     echo "SSH_KEY_CONTENT length: ${#SSH_KEY_CONTENT}"
                     echo "First few characters: ${SSH_KEY_CONTENT:0:50}..."
                     
-                    # Write SSH key to temp file
-                    echo "$SSH_KEY_CONTENT" > /tmp/ssh_key
+                    # Write SSH key to match inventory path
+                    echo "$SSH_KEY_CONTENT" > ~/.ssh/azure-vm-key
                     
                     # Fix potential line ending issues
-                    dos2unix /tmp/ssh_key 2>/dev/null || true
+                    dos2unix ~/.ssh/azure-vm-key 2>/dev/null || true
                     
                     # Set correct permissions
-                    chmod 600 /tmp/ssh_key
+                    chmod 600 ~/.ssh/azure-vm-key
                     
                     # Debug: Check file details
                     echo "SSH key file details:"
-                    ls -la /tmp/ssh_key
+                    ls -la ~/.ssh/azure-vm-key
                     echo "File type:"
-                    file /tmp/ssh_key
+                    file ~/.ssh/azure-vm-key
                     echo "First line of key:"
-                    head -1 /tmp/ssh_key
+                    head -1 ~/.ssh/azure-vm-key
                     
                     # Validate SSH key format
-                    if ssh-keygen -l -f /tmp/ssh_key; then
+                    if ssh-keygen -l -f ~/.ssh/azure-vm-key; then
                         echo "✅ SSH key validation successful"
                     else
                         echo "❌ SSH key validation failed"
                         echo "Key content (first 200 chars):"
-                        head -c 200 /tmp/ssh_key
+                        head -c 200 ~/.ssh/azure-vm-key
                         exit 1
                     fi
                 '''
@@ -122,7 +125,7 @@ pipeline {
                         sh 'mkdir -p ../ansible'
 
                         writeFile file: '../ansible/inventory', text: """[webservers]
-${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=/tmp/ssh_key ansible_host_key_checking=false
+${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=~/.ssh/azure-vm-key ansible_host_key_checking=false
 """
 
                         echo "Inventory file created:"
@@ -142,11 +145,11 @@ ${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=/tmp/ssh_key ans
                     echo "Testing SSH to: $PUBLIC_IP"
                     
                     # Test direct SSH connection
-                    ssh -i /tmp/ssh_key -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+                    ssh -i ~/.ssh/azure-vm-key -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
                         azureuser@$PUBLIC_IP 'echo "✅ Direct SSH connection successful!"' || {
                         echo "❌ Direct SSH connection failed"
                         echo "Debugging SSH connection..."
-                        ssh -i /tmp/ssh_key -o StrictHostKeyChecking=no -o ConnectTimeout=10 -v \
+                        ssh -i ~/.ssh/azure-vm-key -o StrictHostKeyChecking=no -o ConnectTimeout=10 -v \
                             azureuser@$PUBLIC_IP 'echo "test"' 2>&1 | head -20
                     }
                 '''
@@ -227,7 +230,7 @@ ${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=/tmp/ssh_key ans
         always {
             echo '🧹 Cleaning up temporary files...'
             sh '''
-                rm -f /tmp/ssh_key
+                rm -f ~/.ssh/azure-vm-key
                 find . -name "*.tfvars" -delete 2>/dev/null || true
             '''
         }
