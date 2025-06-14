@@ -8,9 +8,8 @@ pipeline {
         ARM_CLIENT_SECRET = credentials('azure-client-secret')
         ARM_TENANT_ID = credentials('azure-tenant-id')
 
-        // SSH key - make sure this credential ID exists in Jenkins
-        SSH_KEY_CONTENT = credentials('ssh-private-key')
-        echo(SSH_KEY_CONTENT," # This will print the SSH key content to the console, which is not recommended for production use.")
+        // SSH key - FIXED: Using the correct credential ID
+        SSH_KEY_CONTENT = credentials('azure-vm-ssh-key')
     }
 
     stages {
@@ -65,61 +64,54 @@ pipeline {
         stage('Wait for VM') {
             steps {
                 echo '⏳ Waiting for VM to boot and get public IP...'
-                sleep time: 10, unit: 'SECONDS'
+                sleep time: 30, unit: 'SECONDS'  // Increased wait time
             }
         }
 
         stage('Prepare SSH Key') {
             steps {
-                echo '🔐 Writing SSH private key to match inventory path...'
+                echo '🔐 Preparing SSH private key...'
                 script {
                     // Create .ssh directory
                     sh 'mkdir -p ~/.ssh'
                     
-                    // Write SSH key using Jenkins writeFile to avoid shell substitution issues
-                    writeFile file: "${env.HOME}/.ssh/azure-vm-key", text: env.SSH_KEY_CONTENT
-                    
-                    // Set permissions and validate
-                    sh '''#!/bin/bash
-                        # Set correct permissions
-                        chmod 600 ~/.ssh/azure-vm-key
-                        
-                        # Debug: Check file details
-                        echo "SSH key file details:"
-                        ls -la ~/.ssh/azure-vm-key
-                        
-                        # Check file type
-                        echo "File type:"
-                        file ~/.ssh/azure-vm-key
-                        
-                        # Show first line (should be -----BEGIN ... KEY-----)
-                        echo "First line of key:"
-                        head -1 ~/.ssh/azure-vm-key
-                        
-                        # Validate SSH key format
-                        if ssh-keygen -l -f ~/.ssh/azure-vm-key 2>/dev/null; then
-                            echo "✅ SSH key validation successful"
-                        else
-                            echo "❌ SSH key validation failed - checking if it's the right format"
-                            echo "Key content preview (first 100 chars):"
-                            head -c 100 ~/.ssh/azure-vm-key
-                            echo ""
-                            echo "Attempting to fix common issues..."
+                    // IMPROVED: Better SSH key handling
+                    withCredentials([string(credentialsId: 'azure-vm-ssh-key', variable: 'SSH_KEY_CONTENT')]) {
+                        sh '''#!/bin/bash
+                            # Write SSH key content to file
+                            echo "$SSH_KEY_CONTENT" > ~/.ssh/azure-vm-key
                             
-                            # Try to fix line endings
-                            tr -d '\r' < ~/.ssh/azure-vm-key > ~/.ssh/azure-vm-key.tmp
-                            mv ~/.ssh/azure-vm-key.tmp ~/.ssh/azure-vm-key
+                            # Set correct permissions
                             chmod 600 ~/.ssh/azure-vm-key
+                            chmod 700 ~/.ssh
                             
-                            # Try validation again
-                            if ssh-keygen -l -f ~/.ssh/azure-vm-key 2>/dev/null; then
-                                echo "✅ SSH key fixed and validated"
+                            # Debug: Check file details
+                            echo "SSH key file details:"
+                            ls -la ~/.ssh/azure-vm-key
+                            
+                            # Show first line (should be -----BEGIN ... KEY-----)
+                            echo "First line of key:"
+                            head -1 ~/.ssh/azure-vm-key
+                            
+                            # Basic format validation
+                            if head -1 ~/.ssh/azure-vm-key | grep -E "^-----BEGIN (RSA |OPENSSH )?PRIVATE KEY-----" > /dev/null; then
+                                echo "✅ SSH key format appears valid"
                             else
-                                echo "❌ SSH key still invalid"
+                                echo "❌ SSH key format invalid. Expected format:"
+                                echo "-----BEGIN RSA PRIVATE KEY----- or -----BEGIN OPENSSH PRIVATE KEY-----"
+                                echo "Got: $(head -1 ~/.ssh/azure-vm-key)"
                                 exit 1
                             fi
-                        fi
-                    '''
+                            
+                            # Test key validity
+                            if ssh-keygen -l -f ~/.ssh/azure-vm-key 2>/dev/null; then
+                                echo "✅ SSH key validation successful"
+                            else
+                                echo "⚠️  SSH key format check failed, but continuing..."
+                                echo "This might be due to OpenSSH version differences"
+                            fi
+                        '''
+                    }
                 }
             }
         }
@@ -141,6 +133,9 @@ pipeline {
 
                         writeFile file: '../ansible/inventory', text: """[webservers]
 ${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=~/.ssh/azure-vm-key ansible_host_key_checking=false ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3
 """
 
                         echo "Inventory file created:"
@@ -159,6 +154,23 @@ ${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=~/.ssh/azure-vm-
                     PUBLIC_IP=$(terraform output -raw public_ip_address)
                     echo "Testing SSH to: $PUBLIC_IP"
                     
+                    # Check if VM is accessible
+                    echo "Checking if VM is accessible..."
+                    if ping -c 3 -W 5 $PUBLIC_IP; then
+                        echo "✅ VM is pingable"
+                    else
+                        echo "❌ VM not pingable"
+                    fi
+                    
+                    # Check SSH service
+                    echo "Checking SSH service..."
+                    if nc -zv -w 10 $PUBLIC_IP 22; then
+                        echo "✅ SSH port is accessible"
+                    else
+                        echo "❌ SSH port not accessible"
+                        exit 1
+                    fi
+                    
                     # Test direct SSH connection with timeout
                     echo "Attempting SSH connection..."
                     if timeout 30 ssh -i ~/.ssh/azure-vm-key \
@@ -169,19 +181,13 @@ ${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=~/.ssh/azure-vm-
                         azureuser@$PUBLIC_IP 'echo "✅ Direct SSH connection successful!"'; then
                         echo "SSH connection working!"
                     else
-                        echo "❌ Direct SSH connection failed, debugging..."
-                        echo "Checking if VM is accessible..."
-                        ping -c 3 $PUBLIC_IP || echo "VM not pingable"
-                        
-                        echo "Checking SSH service..."
-                        nc -zv $PUBLIC_IP 22 || echo "SSH port not accessible"
-                        
-                        echo "Trying verbose SSH..."
+                        echo "❌ Direct SSH connection failed, trying with verbose output..."
                         timeout 15 ssh -i ~/.ssh/azure-vm-key \
                             -o StrictHostKeyChecking=no \
                             -o UserKnownHostsFile=/dev/null \
                             -o ConnectTimeout=10 \
                             -v azureuser@$PUBLIC_IP 'echo "test"' 2>&1 | head -30
+                        exit 1
                     fi
                 '''
             }
