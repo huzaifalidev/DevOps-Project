@@ -87,75 +87,25 @@ stage('Terraform Apply') {
             }
         }
 
-        stage('Prepare SSH Key') {
-            steps {
-                echo '🔐 Preparing SSH private key...'
-                script {
-                    sh 'mkdir -p ${WORKSPACE}/.ssh'
-                    
-                    withCredentials([string(credentialsId: 'ssh-private-key', variable: 'SSH_KEY_CONTENT')]) {
-                        sh '''#!/bin/bash
-                            echo "$SSH_KEY_CONTENT" > ${WORKSPACE}/.ssh/azure-vm-key
-                            chmod 600 ${WORKSPACE}/.ssh/azure-vm-key
-                            chmod 700 ${WORKSPACE}/.ssh
-                            
-                            echo "SSH key file details:"
-                            ls -la ${WORKSPACE}/.ssh/azure-vm-key
-                            echo "SSH key has $(wc -l < ${WORKSPACE}/.ssh/azure-vm-key) lines"
-                            
-                            echo "First line of key:"
-                            head -1 ${WORKSPACE}/.ssh/azure-vm-key
-                            echo "Last line of key:"
-                            tail -1 ${WORKSPACE}/.ssh/azure-vm-key
-                            
-                            if head -1 ${WORKSPACE}/.ssh/azure-vm-key | grep -E "^-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----" > /dev/null; then
-                                echo "✅ SSH key header format appears valid"
-                            else
-                                echo "❌ SSH key format invalid. Expected format:"
-                                echo "-----BEGIN [RSA|OPENSSH|EC] PRIVATE KEY-----"
-                                echo "Got: $(head -1 ${WORKSPACE}/.ssh/azure-vm-key | tr -d '\\r\\n')"
-                                exit 1
-                            fi
-                            
-                            if tail -1 ${WORKSPACE}/.ssh/azure-vm-key | grep -E "^-----END (RSA |OPENSSH |EC )?PRIVATE KEY-----" > /dev/null; then
-                                echo "✅ SSH key footer format appears valid"
-                            else
-                                echo "❌ SSH key footer invalid. Expected format:"
-                                echo "-----END [RSA|OPENSSH|EC] PRIVATE KEY-----"
-                                echo "Got: $(tail -1 ${WORKSPACE}/.ssh/azure-vm-key | tr -d '\\r\\n')"
-                                exit 1
-                            fi
-                            
-                            if ssh-keygen -l -f ${WORKSPACE}/.ssh/azure-vm-key 2>/dev/null; then
-                                echo "✅ SSH key validation successful"
-                            else
-                                echo "❌ SSH key validation failed - key is corrupted or invalid format"
-                                echo "Trying to identify the issue..."
-                                
-                                if grep -q "\\r" ${WORKSPACE}/.ssh/azure-vm-key; then
-                                    echo "Found Windows line endings (\\r) - this might be the issue"
-                                    tr -d '\\r' < ${WORKSPACE}/.ssh/azure-vm-key > ${WORKSPACE}/.ssh/azure-vm-key.tmp
-                                    mv ${WORKSPACE}/.ssh/azure-vm-key.tmp ${WORKSPACE}/.ssh/azure-vm-key
-                                    chmod 600 ${WORKSPACE}/.ssh/azure-vm-key
-                                    echo "Cleaned line endings, retesting..."
-                                    
-                                    if ssh-keygen -l -f ${WORKSPACE}/.ssh/azure-vm-key 2>/dev/null; then
-                                        echo "✅ SSH key validation successful after cleanup"
-                                    else
-                                        echo "❌ SSH key still invalid after cleanup"
-                                        exit 1
-                                    fi
-                                else
-                                    echo "❌ SSH key validation failed - please regenerate your key pair"
-                                    exit 1
-                                fi
-                            fi
-                        '''
-                    }
-                }
+stage('Prepare SSH Key') {
+    steps {
+        echo '🔐 Preparing SSH private key...'
+        script {
+            sh 'mkdir -p ~/.ssh'
+            withCredentials([sshUserPrivateKey(
+                credentialsId: 'ssh-private-key',
+                keyFileVariable: 'SSH_PRIVATE_KEY',
+                usernameVariable: 'SSH_USER'
+            )]) {
+                sh '''
+                    cp $SSH_PRIVATE_KEY ~/.ssh/azure-vm-key
+                    chmod 600 ~/.ssh/azure-vm-key
+                    ls -la ~/.ssh/
+                '''
             }
         }
-
+    }
+}
         stage('Generate Ansible Inventory') {
             steps {
                 dir('terraform') {
