@@ -83,7 +83,7 @@ stage('Terraform Apply') {
         stage('Wait for VM') {
             steps {
                 echo '⏳ Waiting for VM to boot and get public IP...'
-                sleep time: 60, unit: 'SECONDS'
+                sleep time: 5, unit: 'SECONDS'
             }
         }
 
