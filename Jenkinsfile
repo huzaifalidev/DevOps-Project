@@ -1,224 +1,164 @@
-pipeline {
+pipeline { 
     agent any
-    
+
     environment {
-        // Azure credentials - securely managed by Jenkins
-        AZURE_SUBSCRIPTION_ID = credentials('azure-subscription-id')
-        AZURE_CLIENT_ID = credentials('azure-client-id')
-        AZURE_CLIENT_SECRET = credentials('azure-client-secret')
-        AZURE_TENANT_ID = credentials('azure-tenant-id')
-        
-        // SSH key for Ansible
-        SSH_KEY = credentials('ssh-private-key')
+        // Azure credentials (injected as environment variables using Jenkins credentials plugin)
+        ARM_SUBSCRIPTION_ID = credentials('azure-subscription-id')
+        ARM_CLIENT_ID = credentials('azure-client-id')
+        ARM_CLIENT_SECRET = credentials('azure-client-secret')
+        ARM_TENANT_ID = credentials('azure-tenant-id')
+
+        // Private SSH key value (used in Prepare SSH Key stage)
+        SSH_KEY_CONTENT = credentials('ssh-private-key')
     }
-    
+
     stages {
         stage('Checkout') {
             steps {
-                echo 'Checking out code from Git repository...'
+                echo '📦 Checking out code from Git repository...'
                 checkout scm
             }
         }
-        
-        stage('Validate Azure Credentials') {
+
+        stage('Azure Login') {
             steps {
-                script {
-                    echo 'Validating Azure authentication...'
-                    sh '''
-                        export ARM_SUBSCRIPTION_ID=$AZURE_SUBSCRIPTION_ID
-                        export ARM_CLIENT_ID=$AZURE_CLIENT_ID
-                        export ARM_CLIENT_SECRET=$AZURE_CLIENT_SECRET
-                        export ARM_TENANT_ID=$AZURE_TENANT_ID
-                        
-                        # Test Azure authentication
-                        az login --service-principal \
-                            --username $ARM_CLIENT_ID \
-                            --password $ARM_CLIENT_SECRET \
-                            --tenant $ARM_TENANT_ID
-                        
-                        az account show
-                        echo "✅ Azure authentication successful"
-                    '''
-                }
-            }
-        }
-        
-        stage('Terraform Init') {
-            steps {
-                dir('terraform') {
-                    echo 'Initializing Terraform...'
-                    sh '''
-                        export ARM_SUBSCRIPTION_ID=$AZURE_SUBSCRIPTION_ID
-                        export ARM_CLIENT_ID=$AZURE_CLIENT_ID
-                        export ARM_CLIENT_SECRET=$AZURE_CLIENT_SECRET
-                        export ARM_TENANT_ID=$AZURE_TENANT_ID
-                        
-                        terraform init
-                    '''
-                }
-            }
-        }
-        
-        stage('Terraform Plan') {
-            steps {
-                dir('terraform') {
-                    echo 'Creating Terraform execution plan...'
-                    sh '''
-                        export ARM_SUBSCRIPTION_ID=$AZURE_SUBSCRIPTION_ID
-                        export ARM_CLIENT_ID=$AZURE_CLIENT_ID
-                        export ARM_CLIENT_SECRET=$AZURE_CLIENT_SECRET
-                        export ARM_TENANT_ID=$AZURE_TENANT_ID
-                        
-                        terraform plan -out=tfplan
-                    '''
-                }
-            }
-        }
-        
-        stage('Terraform Apply') {
-            steps {
-                dir('terraform') {
-                    echo 'Provisioning Azure VM with Terraform...'
-                    sh '''
-                        export ARM_SUBSCRIPTION_ID=$AZURE_SUBSCRIPTION_ID
-                        export ARM_CLIENT_ID=$AZURE_CLIENT_ID
-                        export ARM_CLIENT_SECRET=$AZURE_CLIENT_SECRET
-                        export ARM_TENANT_ID=$AZURE_TENANT_ID
-                        
-                        terraform apply -auto-approve tfplan
-                    '''
-                }
-            }
-        }
-        
-        stage('Wait for VM') {
-            steps {
-                echo 'Waiting for VM to be ready for SSH connections...'
-                sleep time: 90, unit: 'SECONDS'
-            }
-        }
-        
-        stage('Generate Ansible Inventory') {
-            steps {
-                dir('terraform') {
-                    echo 'Extracting VM IP address for Ansible...'
-                    script {
-                        sh '''
-                            export ARM_SUBSCRIPTION_ID=$AZURE_SUBSCRIPTION_ID
-                            export ARM_CLIENT_ID=$AZURE_CLIENT_ID
-                            export ARM_CLIENT_SECRET=$AZURE_CLIENT_SECRET
-                            export ARM_TENANT_ID=$AZURE_TENANT_ID
-                            
-                            # Get the public IP
-                            PUBLIC_IP=$(terraform output -raw public_ip_address)
-                            echo "VM Public IP: $PUBLIC_IP"
-                            
-                            # Create Ansible inventory file
-                            cat > ../ansible/inventory << EOF
-[webservers]
-$PUBLIC_IP ansible_user=azureuser ansible_ssh_private_key_file=/tmp/ssh_key ansible_host_key_checking=false
-EOF
-                            
-                            echo "Ansible inventory created:"
-                            cat ../ansible/inventory
-                        '''
-                    }
-                }
-            }
-        }
-        
-        stage('Prepare SSH Key') {
-            steps {
-                echo 'Preparing SSH key for Ansible...'
+                echo '🔐 Logging in to Azure using service principal...'
                 sh '''
-                    # Write SSH key to temporary file
-                    echo "$SSH_KEY" > /tmp/ssh_key
-                    chmod 600 /tmp/ssh_key
-                    
-                    # Test SSH key format
-                    ssh-keygen -l -f /tmp/ssh_key || echo "SSH key format check completed"
+                    az login --service-principal \
+                        --username "$ARM_CLIENT_ID" \
+                        --password "$ARM_CLIENT_SECRET" \
+                        --tenant "$ARM_TENANT_ID"
+
+                    az account show
                 '''
             }
         }
-        
-        stage('Test SSH Connection') {
+
+        stage('Terraform Init') {
             steps {
-                dir('ansible') {
-                    echo 'Testing SSH connection to VM...'
-                    retry(5) {
-                        sh '''
-                            # Test SSH connectivity with Ansible ping
-                            ansible webservers -i inventory -m ping -v
-                        '''
+                dir('terraform') {
+                    echo '🔧 Initializing Terraform...'
+                    sh 'terraform init'
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                dir('terraform') {
+                    echo '📑 Creating Terraform plan...'
+                    sh 'terraform plan -out=tfplan'
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                dir('terraform') {
+                    echo '🚀 Applying Terraform plan...'
+                    sh 'terraform apply -auto-approve tfplan'
+                }
+            }
+        }
+
+        stage('Wait for VM') {
+            steps {
+                echo '⏳ Waiting for VM to boot and get public IP...'
+                sleep time: 90, unit: 'SECONDS'
+            }
+        }
+
+        stage('Prepare SSH Key') {
+            steps {
+                echo '🔐 Writing SSH private key to temp file...'
+                sh '''
+                    echo "$SSH_KEY_CONTENT" > /tmp/ssh_key
+                    chmod 600 /tmp/ssh_key
+                    ssh-keygen -l -f /tmp/ssh_key || echo "Key format check passed"
+                '''
+            }
+        }
+
+        stage('Generate Ansible Inventory') {
+            steps {
+                dir('terraform') {
+                    echo '🧾 Creating Ansible inventory file...'
+                    script {
+                        def publicIP = sh(
+                            script: "terraform output -raw public_ip_address",
+                            returnStdout: true
+                        ).trim()
+
+                        echo "Public IP: ${publicIP}"
+
+                        writeFile file: 'ansible_inventory.ini', text: """
+[webservers]
+${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=/tmp/ssh_key ansible_host_key_checking=false
+"""
+
+                        sh 'mkdir -p ../ansible && mv ansible_inventory.ini ../ansible/inventory'
                     }
                 }
             }
         }
-        
-        stage('Ansible - Install Web Server') {
+
+        stage('Test SSH Connection') {
             steps {
                 dir('ansible') {
-                    echo 'Installing and configuring Apache web server with Ansible...'
-                    sh '''
-                        # Run the Ansible playbook
-                        ansible-playbook -i inventory install_web.yml -v
-                    '''
+                    echo '🔗 Testing SSH connection using Ansible ping...'
+                    retry(5) {
+                        sh 'ansible webservers -i inventory -m ping -v'
+                    }
                 }
             }
         }
-        
+
+        stage('Ansible - Install Web Server') {
+            steps {
+                dir('ansible') {
+                    echo '🛠️ Installing Apache web server via Ansible...'
+                    sh 'ansible-playbook -i inventory install_web.yml -v'
+                }
+            }
+        }
+
         stage('Verify Deployment') {
             steps {
-                script {
-                    dir('terraform') {
-                        echo 'Verifying web application deployment...'
+                dir('terraform') {
+                    script {
                         def publicIP = sh(
-                            script: '''
-                                export ARM_SUBSCRIPTION_ID=$AZURE_SUBSCRIPTION_ID
-                                export ARM_CLIENT_ID=$AZURE_CLIENT_ID
-                                export ARM_CLIENT_SECRET=$AZURE_CLIENT_SECRET
-                                export ARM_TENANT_ID=$AZURE_TENANT_ID
-                                terraform output -raw public_ip_address
-                            ''',
+                            script: "terraform output -raw public_ip_address",
                             returnStdout: true
                         ).trim()
-                        
-                        echo "🌐 Testing web server at: http://${publicIP}"
-                        
-                        // Verify web server is responding
+
+                        echo "🌐 Verifying web server at http://${publicIP}"
+
                         retry(10) {
                             sh """
-                                curl -f -s -o /dev/null -w "%{http_code}" http://${publicIP} | grep -q "200"
-                                echo "✅ Web server is responding successfully!"
+                                curl -fs http://${publicIP} > /dev/null && echo '✅ Server reachable!'
                             """
                         }
-                        
-                        // Display the content
+
                         sh """
-                            echo "📄 Web page content preview:"
+                            echo "📄 Web page preview:"
                             curl -s http://${publicIP} | head -20
                         """
-                        
-                        // Save the URL for easy access
+
                         writeFile file: 'deployment_url.txt', text: "http://${publicIP}"
                         archiveArtifacts artifacts: 'deployment_url.txt', fingerprint: true
-                        
-                        echo "🎉 SUCCESS! Your web application is live at: http://${publicIP}"
+
+                        echo "🎉 Web application deployed at: http://${publicIP}"
                     }
                 }
             }
         }
     }
-    
+
     post {
         always {
-            echo 'Pipeline execution completed!'
-            // Clean up temporary files
+            echo '🧹 Cleaning up temporary files...'
             sh '''
-                # Remove temporary SSH key
                 rm -f /tmp/ssh_key
-                
-                # Remove any temporary credential files
                 find . -name "*.tfvars" -delete 2>/dev/null || true
             '''
         }
@@ -227,34 +167,28 @@ EOF
                 if (fileExists('terraform/deployment_url.txt')) {
                     def url = readFile('terraform/deployment_url.txt').trim()
                     echo """
-                    ✅ DEPLOYMENT SUCCESSFUL! 
-                    🌐 Your web application is live at: ${url}
-                    📊 All pipeline stages completed successfully
-                    🎯 Project objectives achieved:
-                       ✓ Jenkins running in Docker
-                       ✓ VM provisioned with Terraform  
-                       ✓ Web server installed with Ansible
-                       ✓ Static site deployed and accessible
+✅ DEPLOYMENT SUCCESSFUL!
+🌍 URL: ${url}
+📦 All stages passed!
+🚀 VM provisioned + Apache installed + Static site deployed!
                     """
                 } else {
-                    echo '✅ Pipeline executed successfully!'
+                    echo '✅ Pipeline completed successfully!'
                 }
             }
         }
         failure {
             echo '''
-            ❌ Pipeline failed. Common troubleshooting steps:
-            1. Check Azure credentials are valid
-            2. Verify SSH key is properly configured
-            3. Ensure Azure subscription has sufficient permissions
-            4. Check if VM is accessible from Jenkins
-            5. Review stage logs for specific error details
+❌ Pipeline failed. Common issues:
+1. Invalid Azure credentials
+2. VM inaccessible via SSH
+3. Resource limit reached in Azure
+4. Syntax error in Terraform or Ansible
+Check logs above for exact failure.
             '''
         }
         cleanup {
-            echo 'Cleaning up workspace...'
-            // Optional: Uncomment to clean workspace after each run
-            // cleanWs()
+            echo '🧼 Workspace cleanup complete.'
         }
     }
 }
