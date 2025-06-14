@@ -3,26 +3,26 @@ provider "azurerm" {
 }
 
 resource "azurerm_resource_group" "rg" {
-  name     = "devops-project-rg"
+  name     = "devops-rg"  # Matches existing
   location = "East US"
 }
 
 resource "azurerm_virtual_network" "vnet" {
-  name                = "devops-project-vnet"
+  name                = "devops-vnet"  # Matches existing
   address_space       = ["10.0.0.0/16"]
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
 }
 
 resource "azurerm_subnet" "subnet" {
-  name                 = "devops-project-subnet"
+  name                 = "devops-subnet"  # Matches existing
   resource_group_name  = azurerm_resource_group.rg.name
   virtual_network_name = azurerm_virtual_network.vnet.name
   address_prefixes     = ["10.0.1.0/24"]
 }
 
 resource "azurerm_network_security_group" "nsg" {
-  name                = "devops-project-nsg"
+  name                = "devops-nsg"  # Matches existing
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
 
@@ -51,8 +51,16 @@ resource "azurerm_network_security_group" "nsg" {
   }
 }
 
+resource "azurerm_public_ip" "public_ip" {  # Matches existing resource name
+  name                = "devops-public-ip"  # Matches existing
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  allocation_method   = "Static"  # Matches existing
+  sku                = "Basic"
+}
+
 resource "azurerm_network_interface" "nic" {
-  name                = "devops-project-nic"
+  name                = "devops-nic"  # Matches existing
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
 
@@ -60,20 +68,12 @@ resource "azurerm_network_interface" "nic" {
     name                          = "internal"
     subnet_id                     = azurerm_subnet.subnet.id
     private_ip_address_allocation = "Dynamic"
-    public_ip_address_id         = azurerm_public_ip.pip.id
+    public_ip_address_id         = azurerm_public_ip.public_ip.id
   }
 }
 
-resource "azurerm_public_ip" "pip" {
-  name                = "myPublicIP"
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  allocation_method   = "Dynamic"
-  sku                = "Basic"
-}
-
 resource "azurerm_linux_virtual_machine" "vm" {
-  name                  = "devops-project-vm"
+  name                  = "devops-vm"  # Matches existing
   location              = azurerm_resource_group.rg.location
   resource_group_name   = azurerm_resource_group.rg.name
   size                  = "Standard_B1s"
@@ -93,17 +93,17 @@ resource "azurerm_linux_virtual_machine" "vm" {
 
   source_image_reference {
     publisher = "Canonical"
-    offer     = "UbuntuServer"
-    sku       = "20_04-lts"
+    offer     = "0001-com-ubuntu-server-focal"
+    sku       = "20_04-lts-gen2"
     version   = "latest"
   }
 }
 
-resource "azurerm_network_interface_security_group_association" "nic_nsg_assoc" {
+resource "azurerm_network_interface_security_group_association" "nic_nsg_association" {  # Matches existing
   network_interface_id      = azurerm_network_interface.nic.id
   network_security_group_id = azurerm_network_security_group.nsg.id
 }
 
 output "public_ip" {
-  value = azurerm_public_ip.pip.ip_address
+  value = azurerm_public_ip.public_ip.ip_address
 }
