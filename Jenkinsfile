@@ -443,9 +443,10 @@ EOF
 
     post {
         always {
-            // Fixed: Remove the extra node block that was causing issues
-            echo '🧹 Cleaning up temporary files...'
-            sh 'rm -rf ${WORKSPACE}/.ssh'
+            node('built-in') {
+                echo '🧹 Cleaning up temporary files...'
+                sh 'rm -rf ${WORKSPACE}/.ssh'
+            }
         }
         success {
             script {
