@@ -52,7 +52,7 @@ pipeline {
             }
         }
         
-        # ... rest of your pipeline stages
+        // ... rest of your pipeline stages
     }
     
     post {
