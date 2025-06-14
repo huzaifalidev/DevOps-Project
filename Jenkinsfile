@@ -9,7 +9,7 @@ pipeline {
         ARM_TENANT_ID = credentials('azure-tenant-id')
 
         // SSH key - FIXED: Using the correct credential ID
-        SSH_KEY_CONTENT = credentials('azure-vm-ssh-key')
+        SSH_KEY_CONTENT = credentials('ssh-private-key')
     }
 
     stages {
@@ -76,7 +76,7 @@ pipeline {
                     sh 'mkdir -p ~/.ssh'
                     
                     // IMPROVED: Better SSH key handling
-                    withCredentials([string(credentialsId: 'azure-vm-ssh-key', variable: 'SSH_KEY_CONTENT')]) {
+                    withCredentials([string(credentialsId: 'ssh-private-key', variable: 'SSH_KEY_CONTENT')]) {
                         sh '''#!/bin/bash
                             # Write SSH key content to file
                             echo "$SSH_KEY_CONTENT" > ~/.ssh/azure-vm-key

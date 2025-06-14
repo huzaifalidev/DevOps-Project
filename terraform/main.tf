@@ -108,7 +108,7 @@ resource "azurerm_linux_virtual_machine" "main" {
 
   admin_ssh_key {
     username   = var.admin_username
-    public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDk41m4FlZ06H3VPjMcbgXgZYPe49XzSPeO0poBh1VM5naoC44M2eLbu93Oy60xtuypZ5hs4UJuvfn1Bv+GSL+Kd10fw6NhRD0VWhnS32vQ8Lx4Ehae2VndGKULNcq9PezMiSJQjNRNu6qr55fstqtK02HjVyRadJroeMS/FiF8qJe5OT2xnhGgCmQrg9kcKIn/mZdLWH5AQ9ShXjutYBOD7gDkP7gqCQnYsu1ekL5vMuB/iHpj0I+ch2nT5qG3Ls+dD6mAJZaoJMkxMBy2BFfT1wJ8/wZFtZhn4Vn4xiLQOXb9Cn1ljbmG/rFPqlS39pgR3gVBMBaDQygibBM7m3QT"
+    public_key = file("azure-vm-key.pub") 
   }
 
   os_disk {
