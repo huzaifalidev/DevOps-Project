@@ -18,7 +18,6 @@ pipeline {
         ARM_CLIENT_ID = credentials('azure-client-id')
         ARM_CLIENT_SECRET = credentials('azure-client-secret')
         ARM_TENANT_ID = credentials('azure-tenant-id')
-        SSH_KEY_CONTENT = credentials('ssh-private-key')
     }
 
     stages {
@@ -87,25 +86,17 @@ stage('Terraform Apply') {
             }
         }
 
-stage('Prepare SSH Key') {
+stage('SSH into Azure VM') {
     steps {
-        echo '🔐 Preparing SSH private key...'
+        echo '🔐 Connecting to VM using sshagent...'
         script {
-            sh 'mkdir -p ~/.ssh'
-            withCredentials([sshUserPrivateKey(
-                credentialsId: 'ssh-private-key',
-                keyFileVariable: 'SSH_PRIVATE_KEY',
-                usernameVariable: 'SSH_USER'
-            )]) {
-                sh '''
-                    cp $SSH_PRIVATE_KEY ~/.ssh/azure-vm-key
-                    chmod 600 ~/.ssh/azure-vm-key
-                    ls -la ~/.ssh/
-                '''
+            sshagent(['ssh-private-key']) {
+                sh 'ssh -o StrictHostKeyChecking=no azureuser@<vm-ip> "uptime"'
             }
         }
     }
 }
+
         stage('Generate Ansible Inventory') {
             steps {
                 dir('terraform') {
