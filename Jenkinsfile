@@ -1,16 +1,5 @@
 pipeline { 
-    // Option 1: Use built-in node (most common solution)
     agent { label 'built-in' }
-    
-    // Option 2: If you want to use any available agent, try:
-    // agent any
-    
-    // Option 3: If you have specific node labels, use:
-    // agent { label 'linux' }
-    // agent { label 'docker' }
-    
-    // Option 4: Use none and specify agent per stage
-    // agent none
 
     environment {
         // Azure credentials
@@ -18,15 +7,52 @@ pipeline {
         ARM_CLIENT_ID = credentials('azure-client-id')
         ARM_CLIENT_SECRET = credentials('azure-client-secret')
         ARM_TENANT_ID = credentials('azure-tenant-id')
+        
+        // SSH key path
+        SSH_KEY_PATH = "${WORKSPACE}/.ssh/azure-vm-key"
     }
 
     stages {
         stage('Checkout') {
-            // If using agent none above, specify agent per stage:
-            // agent { label 'built-in' }
             steps {
                 echo '📦 Checking out code from Git repository...'
                 checkout scm
+            }
+        }
+
+        stage('Setup SSH Keys') {
+            steps {
+                echo '🔑 Setting up SSH keys...'
+                script {
+                    // Create .ssh directory
+                    sh 'mkdir -p ${WORKSPACE}/.ssh'
+                    sh 'chmod 700 ${WORKSPACE}/.ssh'
+                    
+                    // Extract SSH keys from Jenkins credentials
+                    withCredentials([
+                        sshUserPrivateKey(
+                            credentialsId: 'ssh-private-key',
+                            keyFileVariable: 'SSH_PRIVATE_KEY_FILE',
+                            usernameVariable: 'SSH_USER'
+                        ),
+                        string(credentialsId: 'ssh-public-key', variable: 'SSH_PUBLIC_KEY')
+                    ]) {
+                        // Copy private key
+                        sh '''
+                            cp "${SSH_PRIVATE_KEY_FILE}" "${SSH_KEY_PATH}"
+                            chmod 600 "${SSH_KEY_PATH}"
+                            
+                            # Verify key format
+                            echo "Private key format check:"
+                            head -1 "${SSH_KEY_PATH}"
+                            tail -1 "${SSH_KEY_PATH}"
+                            
+                            # Create public key file for reference
+                            echo "${SSH_PUBLIC_KEY}" > "${SSH_KEY_PATH}.pub"
+                            chmod 644 "${SSH_KEY_PATH}.pub"
+                        '''
+                    }
+                }
             }
         }
 
@@ -53,50 +79,126 @@ pipeline {
             }
         }
 
-stage('Terraform Plan') {
-    steps {
-        dir('terraform') {
-            echo '📑 Creating Terraform plan...'
-            withCredentials([string(credentialsId: 'ssh-public-key', variable: 'SSH_PUBLIC_KEY')]) {
-                sh '''
-                    terraform plan -out=tfplan -var="ssh_public_key=${SSH_PUBLIC_KEY}"
-                '''
-            }
-        }
-    }
-}
-
-stage('Terraform Apply') {
-    steps {
-        dir('terraform') {
-            echo '🚀 Applying Terraform configuration...'
-            withCredentials([string(credentialsId: 'ssh-public-key', variable: 'SSH_PUBLIC_KEY')]) {
-                sh '''
-                    terraform apply -auto-approve -var="ssh_public_key=${SSH_PUBLIC_KEY}" tfplan
-                '''
-            }
-        }
-    }
-}
-
-        stage('Wait for VM') {
+        stage('Terraform Plan') {
             steps {
-                echo '⏳ Waiting for VM to boot and get public IP...'
-                sleep time: 5, unit: 'SECONDS'
+                dir('terraform') {
+                    echo '📑 Creating Terraform plan...'
+                    withCredentials([string(credentialsId: 'ssh-public-key', variable: 'SSH_PUBLIC_KEY')]) {
+                        sh '''
+                            terraform plan -out=tfplan -var="ssh_public_key=${SSH_PUBLIC_KEY}"
+                        '''
+                    }
+                }
             }
         }
-stage('SSH into Azure VM') {
-    steps {
-        echo '🔐 Connecting to VM using sshagent...'
-        script {
-            def public_ip_address = "52.191.69.124"  // Define inside script block
-            sshagent(['ssh-private-key']) {
-                sh "ssh -o StrictHostKeyChecking=no azureuser@${public_ip_address} 'uptime'"
-            }
-        }
-    }
-}
 
+        stage('Terraform Apply') {
+            steps {
+                dir('terraform') {
+                    echo '🚀 Applying Terraform configuration...'
+                    withCredentials([string(credentialsId: 'ssh-public-key', variable: 'SSH_PUBLIC_KEY')]) {
+                        sh '''
+                            terraform apply -auto-approve -var="ssh_public_key=${SSH_PUBLIC_KEY}" tfplan
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Wait for VM Initialization') {
+            steps {
+                echo '⏳ Waiting for VM to fully initialize...'
+                script {
+                    // Get public IP
+                    def publicIP = ""
+                    dir('terraform') {
+                        publicIP = sh(
+                            script: "terraform output -raw public_ip_address",
+                            returnStdout: true
+                        ).trim()
+                    }
+                    
+                    echo "VM Public IP: ${publicIP}"
+                    
+                    // Wait for SSH service to be ready
+                    echo "Waiting for SSH service to be ready..."
+                    def sshReady = false
+                    def maxAttempts = 20
+                    
+                    for (int i = 1; i <= maxAttempts; i++) {
+                        try {
+                            sh "timeout 10 nc -zv ${publicIP} 22"
+                            sshReady = true
+                            echo "✅ SSH service is ready after ${i} attempts"
+                            break
+                        } catch (Exception e) {
+                            echo "SSH attempt ${i}/${maxAttempts} failed, waiting 15 seconds..."
+                            sleep 15
+                        }
+                    }
+                    
+                    if (!sshReady) {
+                        error "SSH service not ready after ${maxAttempts} attempts"
+                    }
+                    
+                    // Additional wait for VM to fully boot
+                    echo "Waiting additional 30 seconds for VM to fully boot..."
+                    sleep 30
+                }
+            }
+        }
+
+        stage('Test SSH Connection') {
+            steps {
+                echo '🔍 Testing SSH connection...'
+                script {
+                    def publicIP = ""
+                    dir('terraform') {
+                        publicIP = sh(
+                            script: "terraform output -raw public_ip_address",
+                            returnStdout: true
+                        ).trim()
+                    }
+                    
+                    // Test SSH connection with proper error handling
+                    def sshWorking = false
+                    def maxAttempts = 10
+                    
+                    for (int i = 1; i <= maxAttempts; i++) {
+                        try {
+                            sh """
+                                ssh -i "${SSH_KEY_PATH}" \
+                                    -o StrictHostKeyChecking=no \
+                                    -o UserKnownHostsFile=/dev/null \
+                                    -o ConnectTimeout=30 \
+                                    -o BatchMode=yes \
+                                    -o LogLevel=ERROR \
+                                    azureuser@${publicIP} 'echo "SSH connection successful!"'
+                            """
+                            sshWorking = true
+                            echo "✅ SSH connection established after ${i} attempts"
+                            break
+                        } catch (Exception e) {
+                            echo "SSH test attempt ${i}/${maxAttempts} failed"
+                            if (i == maxAttempts) {
+                                // Show verbose output for debugging
+                                sh """
+                                    echo "Final SSH attempt with verbose output:"
+                                    ssh -i "${SSH_KEY_PATH}" \
+                                        -o StrictHostKeyChecking=no \
+                                        -o UserKnownHostsFile=/dev/null \
+                                        -o ConnectTimeout=30 \
+                                        -vvv azureuser@${publicIP} 'echo "test"' 2>&1 | head -20 || true
+                                """
+                                error "SSH connection failed after ${maxAttempts} attempts"
+                            } else {
+                                sleep 15
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         stage('Generate Ansible Inventory') {
             steps {
@@ -112,7 +214,7 @@ stage('SSH into Azure VM') {
                         sh 'mkdir -p ../ansible'
 
                         writeFile file: '../ansible/inventory', text: """[webservers]
-${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=${WORKSPACE}/.ssh/azure-vm-key ansible_host_key_checking=false ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30'
+${publicIP} ansible_user=azureuser ansible_ssh_private_key_file=${SSH_KEY_PATH} ansible_host_key_checking=false ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30'
 
 [all:vars]
 ansible_python_interpreter=/usr/bin/python3
@@ -125,90 +227,13 @@ ansible_python_interpreter=/usr/bin/python3
             }
         }
 
-        stage('Debug SSH Connection') {
-            steps {
-                echo '🔍 Testing direct SSH connection...'
-                sh '''#!/bin/bash
-                    cd terraform
-                    PUBLIC_IP=$(terraform output -raw public_ip_address)
-                    echo "Testing SSH to: $PUBLIC_IP"
-                    
-                    echo "Waiting additional 30 seconds for VM to be fully ready..."
-                    sleep 30
-                    
-                    echo "Checking if VM is accessible..."
-                    if timeout 10 ping -c 3 $PUBLIC_IP; then
-                        echo "✅ VM is pingable"
-                    else
-                        echo "⚠️  VM not pingable (this is normal for Azure VMs with restricted ICMP)"
-                    fi
-                    
-                    echo "Checking SSH service availability..."
-                    for i in {1..5}; do
-                        if timeout 10 nc -zv $PUBLIC_IP 22 2>/dev/null; then
-                            echo "✅ SSH port is accessible"
-                            break
-                        else
-                            echo "⏳ SSH port check attempt $i/5 failed, waiting 10 seconds..."
-                            sleep 10
-                        fi
-                    done
-                    
-                    if ! timeout 10 nc -zv $PUBLIC_IP 22 2>/dev/null; then
-                        echo "❌ SSH port not accessible after 5 attempts"
-                        exit 1
-                    fi
-                    
-                    echo "Verifying SSH key file..."
-                    ls -la ${WORKSPACE}/.ssh/azure-vm-key
-                    
-                    echo "Attempting SSH connection (5 attempts)..."
-                    for i in {1..5}; do
-                        echo "SSH attempt $i/5..."
-                        if timeout 30 ssh -i ${WORKSPACE}/.ssh/azure-vm-key \
-                            -o StrictHostKeyChecking=no \
-                            -o UserKnownHostsFile=/dev/null \
-                            -o ConnectTimeout=30 \
-                            -o BatchMode=yes \
-                            -o LogLevel=ERROR \
-                            azureuser@$PUBLIC_IP 'echo "✅ SSH connection successful on attempt '$i'!"'; then
-                            echo "✅ SSH connection established!"
-                            exit 0
-                        else
-                            echo "❌ SSH attempt $i failed"
-                            if [ $i -eq 5 ]; then
-                                echo "All SSH attempts failed. Running verbose SSH for debugging..."
-                                timeout 30 ssh -i ${WORKSPACE}/.ssh/azure-vm-key \
-                                    -o StrictHostKeyChecking=no \
-                                    -o UserKnownHostsFile=/dev/null \
-                                    -o ConnectTimeout=30 \
-                                    -vvv azureuser@$PUBLIC_IP 'echo "test"' 2>&1 | head -50
-                                exit 1
-                            else
-                                echo "Waiting 15 seconds before next attempt..."
-                                sleep 15
-                            fi
-                        fi
-                    done
-                '''
-            }
-        }
-
-        stage('Test SSH Connection') {
+        stage('Test Ansible Connection') {
             steps {
                 dir('ansible') {
-                    echo '🔗 Testing SSH connection using Ansible ping...'
-                    sh '''
-                        echo "Current directory: $(pwd)"
-                        echo "Inventory file contents:"
-                        cat inventory
-                        echo "Testing Ansible ping with retries..."
-                    '''
+                    echo '🔗 Testing Ansible connection...'
                     retry(5) {
                         sh '''
-                            echo "Waiting 10 seconds before Ansible ping..."
-                            sleep 10
-                            echo "Running Ansible ping..."
+                            echo "Testing Ansible ping..."
                             ansible webservers -i inventory -m ping -v --timeout=60
                         '''
                     }
@@ -216,24 +241,14 @@ ansible_python_interpreter=/usr/bin/python3
             }
         }
 
-        stage('Ansible - Install Web Server') {
+        stage('Install Web Server') {
             steps {
                 dir('ansible') {
                     echo '🛠️ Installing Apache web server via Ansible...'
-                    sh '''
-                        echo "Available playbooks:"
-                        ls -la *.yml 2>/dev/null || echo "No .yml files found"
-                        
-                        if [ -f install_web.yml ]; then
-                            ansible-playbook -i inventory install_web.yml -v --timeout=120
-                        elif [ -f playbook.yml ]; then
-                            ansible-playbook -i inventory playbook.yml -v --timeout=120
-                        else
-                            echo "❌ No playbook found. Available files:"
-                            ls -la
-                            echo "Creating a basic web server playbook..."
-                            cat > install_web.yml << 'EOF'
----
+                    script {
+                        // Create playbook if it doesn't exist
+                        if (!fileExists('install_web.yml')) {
+                            writeFile file: 'install_web.yml', text: '''---
 - name: Install and configure Apache web server
   hosts: webservers
   become: yes
@@ -338,11 +353,12 @@ ansible_python_interpreter=/usr/bin/python3
         status_code: 200
       retries: 5
       delay: 10
-EOF
-                            echo "✅ Created basic playbook, running it now..."
-                            ansible-playbook -i inventory install_web.yml -v --timeout=300
-                        fi
-                    '''
+'''
+                        }
+                        
+                        // Run playbook
+                        sh 'ansible-playbook -i inventory install_web.yml -v --timeout=300'
+                    }
                 }
             }
         }
@@ -393,10 +409,8 @@ EOF
 
     post {
         always {
-            node('built-in') {
-                echo '🧹 Cleaning up temporary files...'
-                sh 'rm -rf ${WORKSPACE}/.ssh'
-            }
+            echo '🧹 Cleaning up temporary files...'
+            sh 'rm -rf ${WORKSPACE}/.ssh || true'
         }
         success {
             script {
@@ -427,12 +441,6 @@ Common solutions:
 3. Network Issues: Check Azure NSG rules allow SSH (port 22) and HTTP (port 80)
 4. VM Startup: Increase wait times for VM to fully boot
 5. Credentials: Verify all Jenkins credentials are correctly configured
-
-For SSH key issues specifically:
-- Ensure private key format is correct (BEGIN/END PRIVATE KEY)
-- Remove any Windows line endings from the key
-- Verify the public key matches the private key
-- Check that the public key is properly deployed to the Azure VM
             '''
         }
         cleanup {
