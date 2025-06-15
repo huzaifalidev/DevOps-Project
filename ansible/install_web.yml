@@ -2,15 +2,42 @@
 - name: Install and configure Apache web server
   hosts: webservers
   become: yes
+  gather_facts: yes
   tasks:
+    - name: Wait for system to be ready
+      wait_for_connection:
+        timeout: 300
+        delay: 5
+
+    # Install sudo first if it's not available
+    - name: Install sudo (if not present)
+      raw: |
+        if ! command -v sudo >/dev/null 2>&1; then
+          if command -v apt-get >/dev/null 2>&1; then
+            apt-get update && apt-get install -y sudo
+          elif command -v yum >/dev/null 2>&1; then
+            yum install -y sudo
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y sudo
+          fi
+        fi
+      changed_when: false
+
+    - name: Gather facts after sudo installation
+      setup:
+
     - name: Update apt cache
       apt:
         update_cache: yes
+      retries: 3
+      delay: 10
 
     - name: Install Apache2
       apt:
         name: apache2
         state: present
+      retries: 3
+      delay: 10
 
     - name: Start Apache2 service
       systemd:
@@ -39,9 +66,20 @@
         name: apache2
         state: restarted
 
-    - name: Ensure Apache2 is accessible
+    - name: Test local web server first
+      uri:
+        url: http://localhost
+        method: GET
+        status_code: 200
+      retries: 5
+      delay: 10
+
+    - name: Ensure Apache2 is accessible from outside
       uri:
         url: "http://{{ ansible_host }}"
         method: GET
         status_code: 200
+        timeout: 30
       delegate_to: localhost
+      retries: 10
+      delay: 15

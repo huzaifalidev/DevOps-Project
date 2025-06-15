@@ -241,128 +241,20 @@ ansible_python_interpreter=/usr/bin/python3
             }
         }
 
-        stage('Install Web Server') {
+stage('Install Web Server') {
             steps {
                 dir('ansible') {
                     echo '🛠️ Installing Apache web server via Ansible...'
                     script {
-                        // Create playbook if it doesn't exist
-                        if (!fileExists('install_web.yml')) {
-                            writeFile file: 'install_web.yml', text: '''---
-- name: Install and configure Apache web server
-  hosts: webservers
-  become: yes
-  gather_facts: yes
-  tasks:
-    - name: Wait for system to be ready
-      wait_for_connection:
-        timeout: 300
-        delay: 5
-
-    - name: Update package cache
-      apt:
-        update_cache: yes
-        cache_valid_time: 3600
-      retries: 3
-      delay: 10
-      
-    - name: Install Apache
-      apt:
-        name: apache2
-        state: present
-        update_cache: yes
-      retries: 3
-      delay: 10
-    
-    - name: Start and enable Apache
-      systemd:
-        name: apache2
-        state: started
-        enabled: yes
-        daemon_reload: yes
-    
-    - name: Create a simple index page
-      copy:
-        content: |
-          <!DOCTYPE html>
-          <html>
-          <head>
-              <title>DevOps Project Success!</title>
-              <style>
-                  body { 
-                      font-family: Arial, sans-serif; 
-                      text-align: center; 
-                      margin-top: 50px; 
-                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                      color: white;
-                      min-height: 100vh;
-                  }
-                  .container { 
-                      max-width: 600px; 
-                      margin: 0 auto; 
-                      padding: 20px;
-                      background: rgba(255,255,255,0.1);
-                      border-radius: 10px;
-                      backdrop-filter: blur(10px);
-                  }
-                  .success { color: #00ff88; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); }
-                  ul { text-align: left; display: inline-block; }
-                  li { margin: 10px 0; }
-              </style>
-          </head>
-          <body>
-              <div class="container">
-                  <h1 class="success">🎉 DevOps Pipeline Success!</h1>
-                  <p>Your infrastructure has been successfully deployed using:</p>
-                  <ul>
-                      <li>✅ Jenkins CI/CD Pipeline</li>
-                      <li>✅ Terraform Infrastructure as Code</li>
-                      <li>✅ Ansible Configuration Management</li>
-                      <li>✅ Azure Cloud Platform</li>
-                  </ul>
-                  <p><strong>Deployment Date:</strong> {{ ansible_date_time.iso8601 }}</p>
-                  <p><strong>Server:</strong> {{ inventory_hostname }}</p>
-                  <p><strong>OS:</strong> {{ ansible_distribution }} {{ ansible_distribution_version }}</p>
-                  <hr style="margin: 20px 0; border: 1px solid rgba(255,255,255,0.3);">
-                  <p><em>🚀 Infrastructure as Code in Action!</em></p>
-              </div>
-          </body>
-          </html>
-        dest: /var/www/html/index.html
-        owner: www-data
-        group: www-data
-        mode: '0644'
-    
-    - name: Ensure Apache is running and accessible
-      systemd:
-        name: apache2
-        state: started
-      
-    - name: Check Apache status
-      command: systemctl is-active apache2
-      register: apache_status
-      
-    - name: Display Apache status
-      debug:
-        msg: "Apache status: {{ apache_status.stdout }}"
-        
-    - name: Test local web server
-      uri:
-        url: http://localhost
-        method: GET
-        status_code: 200
-      retries: 5
-      delay: 10
-'''
-                        }
-                        
-                        // Run playbook
+                        sh 'echo "Files in ansible directory:"'
+                        sh 'ls -la'
+                        sh 'echo "Files in app directory:"'
+                        sh 'ls -la ../app/'
                         sh 'ansible-playbook -i inventory install_web.yml -v --timeout=300'
                     }
                 }
             }
         }
-
         stage('Verify Deployment') {
             steps {
                 dir('terraform') {
