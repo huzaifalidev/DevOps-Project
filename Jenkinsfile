@@ -85,17 +85,18 @@ stage('Terraform Apply') {
                 sleep time: 5, unit: 'SECONDS'
             }
         }
-
 stage('SSH into Azure VM') {
     steps {
         echo '🔐 Connecting to VM using sshagent...'
         script {
+            def public_ip_address = "52.191.69.124"  // Define inside script block
             sshagent(['ssh-private-key']) {
-                sh 'ssh -o StrictHostKeyChecking=no azureuser@<vm-ip> "uptime"'
+                sh "ssh -o StrictHostKeyChecking=no azureuser@${public_ip_address} 'uptime'"
             }
         }
     }
 }
+
 
         stage('Generate Ansible Inventory') {
             steps {
